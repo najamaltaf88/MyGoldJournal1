@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { formatMoney, formatRr, toNumber } from "@/lib/gold";
 import { toast } from "sonner";
 
-const EA_DOWNLOAD = "/manus-storage/GoldJournal_EA_bf8ddfe3.mq5";
+const EA_DOWNLOAD = "/api/mt5/ea";
 const pkt = (value?: string | Date | null) => value ? new Date(value).toLocaleString("en-PK", { timeZone: "Asia/Karachi", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
 const masked = (key: string) => key.length < 10 ? "••••••••" : `${key.slice(0, 4)}••••••••${key.slice(-3)}`;
 const moneyOrDash = (value: string | number | null | undefined) => value == null ? "—" : formatMoney(value);

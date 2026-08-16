@@ -1,48 +1,23 @@
 // @vitest-environment jsdom
 import React from "react";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-const { oauthStatusQuery } = vi.hoisted(() => ({ oauthStatusQuery: vi.fn() }));
-
-vi.mock("@/lib/trpc", () => ({
-  trpc: {
-    auth: {
-      oauthStatus: { useQuery: oauthStatusQuery },
-    },
-  },
-}));
-
-vi.mock("@/const", () => ({ startLogin: vi.fn() }));
-
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { LoginScreen } from "./GoldJournal";
 
-describe("Gold Journal login availability", () => {
-  afterEach(() => {
-    cleanup();
-    vi.clearAllMocks();
-    vi.useRealTimers();
+describe("Gold Journal Supabase login", () => {
+  afterEach(() => cleanup());
+
+  it("renders the Supabase email/password sign-in form", () => {
+    render(<LoginScreen />);
+    expect(screen.getByPlaceholderText("Email address")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Password")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Sign in securely" })).toBeTruthy();
   });
 
-  it("surfaces an OAuth outage as a recoverable sign-in state", () => {
-    const refetch = vi.fn();
-    oauthStatusQuery.mockReturnValue({ data: { available: false }, isError: false, isLoading: false, isFetching: false, refetch });
-
+  it("allows a visitor to switch to account creation", () => {
     render(<LoginScreen />);
-
-    expect(screen.getByRole("alert").textContent).toContain("Secure sign-in is temporarily unavailable.");
-    fireEvent.click(screen.getByRole("button", { name: "Recheck sign-in service" }));
-    expect(refetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("exits the checking state after the client recovery deadline when the health request stalls", () => {
-    vi.useFakeTimers();
-    oauthStatusQuery.mockReturnValue({ data: undefined, isError: false, isLoading: true, isFetching: true, refetch: vi.fn() });
-
-    render(<LoginScreen />);
-    act(() => { vi.advanceTimersByTime(3_500); });
-
-    expect(screen.getByRole("alert").textContent).toContain("Secure sign-in is temporarily unavailable.");
-    expect(screen.getByRole("button", { name: "Recheck sign-in service" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Need a new account? Create one" }));
+    expect(screen.getByRole("button", { name: "Create Supabase account" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Already have an account? Sign in" })).toBeTruthy();
   });
 });

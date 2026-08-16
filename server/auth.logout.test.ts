@@ -1,84 +1,43 @@
 import { describe, expect, it } from "vitest";
 import { appRouter } from "./routers";
-import { COOKIE_NAME } from "../shared/const";
 import type { TrpcContext } from "./_core/context";
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-type CookieCall = {
-  name: string;
-  options: Record<string, unknown>;
-};
 
 type AuthenticatedUser = NonNullable<TrpcContext["user"]>;
 
-function createAuthContext(): { ctx: TrpcContext; clearedCookies: CookieCall[] } {
-  const clearedCookies: CookieCall[] = [];
-
-  const user: AuthenticatedUser = {
-    id: 1,
-    openId: "sample-user",
-    email: "sample@example.com",
-    name: "Sample User",
-    loginMethod: "manus",
-    role: "user",
-    createdAt: new Date(),
-    updatedAt: new Date(),
-    lastSignedIn: new Date(),
-  };
-
-  const ctx: TrpcContext = {
+function createContext(user: TrpcContext["user"] = null): TrpcContext {
+  return {
     user,
-    req: {
-      protocol: "https",
-      headers: {},
-    } as TrpcContext["req"],
-    res: {
-      clearCookie: (name: string, options: Record<string, unknown>) => {
-        clearedCookies.push({ name, options });
-      },
-    } as TrpcContext["res"],
+    req: { protocol: "https", headers: {} } as TrpcContext["req"],
+    res: {} as TrpcContext["res"],
   };
-
-  return { ctx, clearedCookies };
 }
 
-describe("auth.logout", () => {
-  it("clears the session cookie and reports success", async () => {
-    const { ctx, clearedCookies } = createAuthContext();
-    const caller = appRouter.createCaller(ctx);
-
-    const result = await caller.auth.logout();
-
-    expect(result).toEqual({ success: true });
-    expect(clearedCookies).toHaveLength(1);
-    expect(clearedCookies[0]?.name).toBe(COOKIE_NAME);
-    expect(clearedCookies[0]?.options).toMatchObject({
-      maxAge: -1,
-      secure: true,
-      sameSite: "none",
-      httpOnly: true,
-      path: "/",
-    });
-  });
-});
-
-describe("auth.oauthStatus", () => {
-  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
-
-  it("reports an unavailable OAuth service without exposing provider errors", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("DNS lookup failed")));
-    const { ctx } = createAuthContext();
-
-    await expect(appRouter.createCaller(ctx).auth.oauthStatus()).resolves.toEqual({ available: false });
+describe("Supabase authentication contract", () => {
+  it("reports Supabase Auth availability without exposing secrets", async () => {
+    const caller = appRouter.createCaller(createContext());
+    const status = await caller.auth.status();
+    expect(status).toEqual({ available: expect.any(Boolean) });
+    expect(status).not.toHaveProperty("serviceRoleKey");
   });
 
-  it("returns unavailable after the bounded probe deadline even when fetch never settles", async () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => undefined)));
-    const { ctx } = createAuthContext();
-    const status = appRouter.createCaller(ctx).auth.oauthStatus();
+  it("returns the authenticated local user when the context contains one", async () => {
+    const user: AuthenticatedUser = {
+      id: 1,
+      openId: "supabase-user-1",
+      name: "Supabase Trader",
+      email: "trader@example.com",
+      loginMethod: "supabase",
+      role: "user",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      lastSignedIn: new Date(),
+    };
+    const caller = appRouter.createCaller(createContext(user));
+    await expect(caller.auth.me()).resolves.toEqual(user);
+  });
 
-    await vi.advanceTimersByTimeAsync(2_500);
-    await expect(status).resolves.toEqual({ available: false });
+  it("keeps logout stateless because Supabase clears the browser session", async () => {
+    const caller = appRouter.createCaller(createContext());
+    await expect(caller.auth.logout()).resolves.toEqual({ success: true });
   });
 });

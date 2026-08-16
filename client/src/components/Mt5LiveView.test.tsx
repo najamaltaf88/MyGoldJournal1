@@ -49,7 +49,7 @@ describe("Mt5LiveView", () => {
     expect(screen.getByText("$10,042.50")).toBeTruthy();
     expect(screen.getByText(/42 closed positions synced/i)).toBeTruthy();
     const ea = screen.getByRole("link", { name: /Download EA/i });
-    expect(ea.getAttribute("href")).toContain("GoldJournal_EA_bf8ddfe3.mq5");
+    expect(ea.getAttribute("href")).toBe("/api/mt5/ea");
     expect(screen.getByRole("columnheader", { name: "Trade Log" })).toBeTruthy();
     expect(screen.getByText("Syncing")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Journal now" })).toBeNull();

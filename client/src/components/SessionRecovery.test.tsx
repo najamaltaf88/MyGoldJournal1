@@ -12,15 +12,15 @@ describe("SessionRecovery", () => {
     expect(screen.getByText("WORKSTATION STATUS")).toBeTruthy();
     expect(screen.getByText("Private records locked")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry secure sync" }));
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect session" }));
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect Supabase session" }));
     expect(retry).toHaveBeenCalledTimes(1); expect(reconnect).toHaveBeenCalledTimes(1);
   });
 
-  it("turns reconnect into a safe recheck action when OAuth is unavailable", () => {
+  it("turns reconnect into a safe recheck action when Supabase Auth is unavailable", () => {
     const retry = vi.fn(); const reconnect = vi.fn();
     render(<SessionRecovery onRetry={retry} onReconnect={reconnect} reconnectStatus="unavailable" />);
     expect(screen.getByRole("alert").textContent).toContain("Secure sign-in is temporarily unavailable.");
-    fireEvent.click(screen.getByRole("button", { name: "Recheck sign-in service" }));
+    fireEvent.click(screen.getByRole("button", { name: "Recheck Supabase Auth" }));
     expect(reconnect).toHaveBeenCalledTimes(1);
   });
 });

@@ -5,7 +5,7 @@ const PREFIX = "v1";
 const ALGORITHM = "aes-256-gcm";
 
 function keyBytes() {
-  const secret = ENV.mt5EncryptionKey || (!ENV.isProduction ? ENV.cookieSecret || "local-development-only-mt5-key" : "");
+  const secret = ENV.mt5EncryptionKey || (!ENV.isProduction ? "local-development-only-mt5-key" : "");
   if (!secret) throw new Error("MT5_ENCRYPTION_KEY is required to create or resolve MT5 connections.");
   return createHash("sha256").update(secret, "utf8").digest();
 }

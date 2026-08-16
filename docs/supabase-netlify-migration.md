@@ -1,96 +1,110 @@
-# Supabase PostgreSQL and Netlify Migration Runbook
+# Supabase-Only PostgreSQL, Auth, Storage, and Netlify Runbook
 
 ## Scope and outcome
 
-This runbook describes the production migration of MyGoldJournal1 from MySQL/TiDB to Supabase PostgreSQL and the deployment of the frontend and API through Netlify. The migration preserves the existing React 19 user interface, Express/tRPC API, Manus OAuth session model, Manus Forge/S3-compatible storage, trading calculations, MT5 account isolation, and PKT UTC+5 timestamp semantics.
+MyGoldJournal1 now uses Supabase as its only external application platform: **Supabase PostgreSQL** for the database, **Supabase Auth** for email/password sessions, and **Supabase Storage** for journal screenshots and the MT5 Expert Advisor asset. Manus OAuth, Manus Forge/S3 storage, Manus runtime modules, Manus environment variables, and the old session-cookie flow have been removed from the live application.
 
-The application now uses Drizzle ORM with `drizzle-orm/node-postgres` and the `pg` driver. The legacy MySQL driver is retained only as a development dependency for the one-time export utility; the deployed application has no MySQL runtime dependency.
+The application remains a React 19 + Vite frontend with an Express/tRPC API, Drizzle ORM, PostgreSQL `pg` driver, MT5 ingest integration, account isolation, and the existing PKT UTC+5 behavior. The legacy MySQL driver remains only as a development dependency for the one-time export utility; it is not part of the deployed runtime.
+
+> **Important:** Supabase `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and `VITE_SUPABASE_ANON_KEY` do not replace the PostgreSQL connection string used by Drizzle. The deployed server also requires `DATABASE_URL` for direct PostgreSQL queries and `MT5_ENCRYPTION_KEY` for encrypted MT5 API keys.
 
 ## Target architecture
 
 | Layer | Production implementation | Important constraint |
 |---|---|---|
-| Frontend | Vite build published from `dist/public` on Netlify | No server secrets are exposed through `VITE_*` variables. |
+| Frontend | Vite build published from `dist/public` on Netlify | Only the Supabase URL and anon/publishable key may be exposed through `VITE_*`. |
+| Authentication | Supabase Auth email/password sessions in the browser | The browser sends the Supabase access token as `Authorization: Bearer ...`; no Manus cookie is used. |
 | API | Existing Express middleware and routes wrapped by `netlify/functions/api.ts` | `/api/*` is rewritten to the function before the SPA fallback. |
-| RPC | tRPC under `/api/trpc` | Manus OAuth remains the authentication provider. |
-| MT5 ingest | Existing `/api/mt5` flow, including authentication, validation, ordering, idempotency, and atomic writes | The established PKT UTC+5 interpretation is unchanged. |
-| Database | Supabase PostgreSQL through `pg` and Drizzle | Use the transaction pooler on port 6543 for functions and the session pooler on port 5432 for migrations/imports. |
-| Storage | Existing Manus Forge/S3-compatible storage | No storage migration is required. |
-| Security boundary | All database access remains server-side; Supabase Auth and RLS are not introduced | Keep `DATABASE_URL`, `JWT_SECRET`, `MT5_ENCRYPTION_KEY`, and Forge server keys out of `VITE_*`. |
+| RPC | Existing tRPC procedures under `/api/trpc` | The server verifies the Supabase bearer token and upserts the identity into the local `users` table. |
+| MT5 ingest | Existing `/api/mt5` flow with authentication, validation, ordering, idempotency, and atomic writes | The established PKT UTC+5 interpretation is unchanged. |
+| Database | Supabase PostgreSQL through Drizzle and `pg` | Use transaction pooler port `6543` for Netlify Functions and session pooler port `5432` for migrations/imports. |
+| Storage | Private Supabase Storage bucket | Screenshots and the EA are served through server-generated signed URLs. |
+| Security boundary | All database and private-storage access remains server-side | Never expose `DATABASE_URL`, service-role key, or MT5 encryption key through `VITE_*`. RLS is not required because all access is through Express. |
 
-## Repository changes
+## Supabase setup
 
-The PostgreSQL schema in `drizzle/schema.ts` preserves the twelve existing tables and names while converting MySQL constructs to PostgreSQL equivalents: `pgTable`, `pgEnum`, `serial`, `integer`, `jsonb`, and timezone-aware timestamps. MySQL duplicate-key operations were converted to PostgreSQL `onConflictDoUpdate` operations with explicit conflict targets. Insert mutations now use PostgreSQL `returning` clauses rather than MySQL `insertId` values.
+Create a Supabase project and enable **Authentication → Email**. Decide whether email confirmation is required. If confirmation is enabled, configure the Supabase Site URL and redirect URLs to include the Netlify domain; otherwise new users can sign in immediately after registration.
 
-The Express bootstrap now exports `createApp`, allowing the same middleware and route registration to be reused by Netlify Functions. The long-running local/server deployment path remains available through `startServer`; the Netlify wrapper disables frontend serving because Netlify serves the static build separately.
+Create a private Storage bucket named `journal-assets`, or choose another private bucket name and set `SUPABASE_STORAGE_BUCKET` accordingly. Upload the MT5 EA file to the object key configured in `SUPABASE_EA_ASSET_KEY`, whose default is `mt5/GoldJournal_EA.mq5`. The application’s **Download EA v1.13** link calls `/api/mt5/ea`; the server returns a one-hour signed Supabase Storage URL.
 
-The migration utilities are intentionally non-destructive. `scripts/export-mysql-data.ts` writes a JSON export with row counts and safe serialization for bigint, date, buffer, and JSON values. `scripts/import-postgres-data.ts` imports in dependency-safe table order inside a transaction, uses `ON CONFLICT DO NOTHING` for safe reruns, and repairs serial sequences. `scripts/verify-supabase-migration.ts` compares row counts when an export is supplied and checks MT5/account-isolation invariants, including duplicate account/ticket states, orphan records, and cross-user MT5 connections.
+Apply the generated schema migration from `drizzle/migrations/0000_high_zaran.sql` in Supabase SQL Editor, or use `pnpm db:migrate` with the session pooler connection. Apply it only once to a fresh/empty project. Do not paste `drizzle/schema.ts` into SQL Editor; the migration SQL is the executable schema.
 
-## Operator migration procedure
+## Legacy data migration
 
-First, create a Supabase project and obtain both pooler URLs. Configure the session pooler URL temporarily for schema migration and import operations. Apply the generated Drizzle migration with `pnpm db:migrate`. The generated SQL is stored in `drizzle/migrations/0000_high_zaran.sql`.
+The PostgreSQL schema preserves the twelve existing tables and names while converting MySQL constructs to PostgreSQL equivalents: `pgTable`, `pgEnum`, `serial`, `integer`, `jsonb`, and timezone-aware timestamps. MySQL duplicate-key operations use PostgreSQL `onConflictDoUpdate` targets, and insert mutations use PostgreSQL `returning` clauses.
 
-Next, export the legacy database without changing it:
+The migration utilities are non-destructive. `scripts/export-mysql-data.ts` reads the legacy database without changing it and writes row counts plus safe serialization for bigint, date, buffer, and JSON values. `scripts/import-postgres-data.ts` imports in dependency-safe table order inside a transaction, uses `ON CONFLICT DO NOTHING` for safe reruns, and repairs serial sequences. `scripts/verify-supabase-migration.ts` compares row counts and checks MT5/account-isolation invariants.
 
-```bash
-MYSQL_DATABASE_URL='mysql://...' pnpm db:export:mysql ./migration/mysql-export.json
-```
-
-Import the export into the new Supabase database using the session pooler URL:
+Use the session pooler for migration operations:
 
 ```bash
-DATABASE_URL='postgresql://...:5432/postgres?sslmode=require' \
+pnpm install
+
+MYSQL_DATABASE_URL='mysql://USER:PASSWORD@HOST:3306/DATABASE' \
+pnpm db:export:mysql ./migration/mysql-export.json
+
+DATABASE_URL='postgresql://postgres.PROJECT_REF:PASSWORD@SESSION_POOLER_HOST:5432/postgres?sslmode=require' \
 pnpm db:import:postgres ./migration/mysql-export.json
-```
 
-Run verification before switching application traffic:
-
-```bash
-DATABASE_URL='postgresql://...:5432/postgres?sslmode=require' \
+DATABASE_URL='postgresql://postgres.PROJECT_REF:PASSWORD@SESSION_POOLER_HOST:5432/postgres?sslmode=require' \
 pnpm db:verify ./migration/mysql-export.json
 ```
 
 The verifier must report matching row counts and zero failures for duplicate MT5 live account/ticket values, duplicate MT5 journal account/ticket values, orphan MT5 records, and cross-user MT5 connections. If verification fails, do not cut over the application.
 
-After verification, configure the Netlify Function with the transaction pooler URL on port 6543. Netlify environment variables must include the server-side values listed below. Deploy the repository using the Netlify build command already committed in `netlify.toml`, then perform an authenticated browser smoke test and an MT5 OPEN/CLOSE smoke test against the production domain.
+## Netlify environment variables
 
-## Required environment variables
+In Netlify, open **Site configuration → Environment variables → Add a variable**. Add the following values to the Production scope. Add them to Deploy Preview scope only if preview deployments should connect to a separate test Supabase project.
 
-| Variable | Where it is used | Exposure rule |
+| Variable | Value and purpose | Exposure rule |
 |---|---|---|
-| `DATABASE_URL` | Supabase PostgreSQL connection | Server-only; use the transaction pooler for Netlify. |
-| `JWT_SECRET` | Manus OAuth session cookies | Server-only. |
-| `MT5_ENCRYPTION_KEY` | Encrypted MT5 API-key storage | Server-only and at least 32 characters. |
-| `VITE_APP_ID` | Manus OAuth application identifier | Client-visible by design. |
-| `OAUTH_SERVER_URL` | Manus OAuth server-side flow | Server-only. |
-| `VITE_OAUTH_PORTAL_URL` | Manus login portal URL | Client-visible by design. |
-| `OWNER_OPEN_ID`, `OWNER_NAME` | Existing owner/admin configuration | Server-side configuration. |
-| `BUILT_IN_FORGE_API_URL`, `BUILT_IN_FORGE_API_KEY` | Server-side storage and Manus Forge operations | Server-only. |
-| `VITE_FRONTEND_FORGE_API_URL`, `VITE_FRONTEND_FORGE_API_KEY` | Existing browser-safe Forge integration | Only use the existing browser-safe key; never put database, JWT, or MT5 secrets here. |
+| `SUPABASE_URL` | `https://<project-ref>.supabase.co` | Server-only copy; do not expose this name to browser code unless also set as `VITE_SUPABASE_URL`. |
+| `SUPABASE_SERVICE_ROLE_KEY` | Supabase service-role key | **Server-only. Never use `VITE_`.** |
+| `VITE_SUPABASE_URL` | Same Supabase project URL | Browser-safe. |
+| `VITE_SUPABASE_ANON_KEY` | Supabase anon/publishable key | Browser-safe; this key is expected in the frontend bundle. |
+| `DATABASE_URL` | Supabase transaction pooler URL on port `6543` with `?sslmode=require` | Server-only. |
+| `MT5_ENCRYPTION_KEY` | Existing 32+ character encryption key | Server-only. Preserve the old value when migrating existing MT5 connections. |
+| `SUPABASE_STORAGE_BUCKET` | `journal-assets` or the selected private bucket | Server-side configuration. |
+| `SUPABASE_EA_ASSET_KEY` | `mt5/GoldJournal_EA.mq5` or the uploaded EA object key | Server-side configuration. |
+| `VITE_ANALYTICS_ENDPOINT` | Optional analytics endpoint | Leave blank to disable. |
+| `VITE_ANALYTICS_WEBSITE_ID` | Optional analytics site ID | Leave blank to disable. |
 
-The legacy `MYSQL_DATABASE_URL` and `MYSQL_EXPORT_FILE` variables are needed only while running the migration scripts and should not be configured in the deployed Netlify environment.
+Do not add these legacy variables to Netlify: `MYSQL_DATABASE_URL`, `MYSQL_EXPORT_FILE`, `JWT_SECRET`, `VITE_APP_ID`, `OAUTH_SERVER_URL`, `VITE_OAUTH_PORTAL_URL`, `OWNER_OPEN_ID`, `OWNER_NAME`, `BUILT_IN_FORGE_API_URL`, `BUILT_IN_FORGE_API_KEY`, `VITE_FRONTEND_FORGE_API_URL`, or `VITE_FRONTEND_FORGE_API_KEY`.
 
-## Netlify behavior and known limitation
+## Netlify deployment
 
-The redirect order in `netlify.toml` sends `/api/*` to `/.netlify/functions/api/api/:splat` before the catch-all SPA rewrite sends browser routes to `/index.html`. The function uses the existing Express API rather than a second implementation, so Manus OAuth callbacks, tRPC, storage proxying, MT5 authentication, payload validation, and the existing error handling remain in one code path.
+The committed `netlify.toml` defines the required settings:
 
-The MT5 rate limiter remains an in-memory bounded map. Its state is bounded within an individual warm function instance and invalid keys cannot grow it without limit, but serverless instances do not share memory and their state can reset on cold starts. This is a documented limitation of the Netlify deployment mode. If MT5 polling volume or abuse protection requires cross-instance enforcement, move the API to an always-on service or replace the limiter store with a shared Redis/Supabase-backed mechanism. The current function path should be kept within Netlify’s function timeout by retaining the existing bounded MT5 batch size and request limits.
+| Setting | Value |
+|---|---|
+| Build command | `pnpm build` |
+| Publish directory | `dist/public` |
+| Functions directory | `netlify/functions` |
+| Function bundler | esbuild |
+| API rewrite | `/api/*` → `/.netlify/functions/api/api/:splat` |
+| SPA rewrite | `/*` → `/index.html` |
+
+Connect the GitHub repository, select the `main` branch, add the environment variables, and deploy. After deployment, set the Supabase **Authentication → URL Configuration → Site URL** to the Netlify domain and add the Netlify domain to the allowed redirect URLs. Test registration, login, refresh, logout, screenshot upload, EA download, and MT5 OPEN/CLOSE events.
+
+## Known Netlify limitation
+
+The MT5 rate limiter remains an in-memory bounded map. Its state is bounded inside each warm function instance, and invalid keys cannot grow that instance’s limiter state without limit, but serverless instances do not share memory and state resets on cold starts. This is a documented limitation of the Netlify deployment mode. If cross-instance abuse protection is required, move the API to an always-on service or replace the limiter store with a shared Redis/Supabase-backed mechanism. Keep MT5 history batches within the existing limits so requests complete within the platform timeout.
 
 ## MT5 and timezone preservation
 
-No broker timezone auto-detection, UTC conversion, DST conversion, or timezone redesign was introduced. The existing `Asia/Karachi`/UTC+5 session-classification contract and the established interpretation of MT5 timestamps remain in place. PostgreSQL stores the migrated instant fields as timezone-aware timestamps, while the application continues to classify MT5 timestamps through the existing PKT logic.
+No broker timezone auto-detection, UTC conversion, DST conversion, or timezone redesign was introduced. The existing `Asia/Karachi`/UTC+5 session-classification contract and established interpretation of MT5 timestamps remain in place. PostgreSQL stores migrated instant fields as timezone-aware timestamps, while application session classification continues through the existing PKT logic.
 
-The existing MT5 safeguards remain intact: account ownership is checked before data access, API keys are encrypted and hashed, raw keys are not returned after setup, MT5 writes use account/ticket conflict keys, repeated OPEN/CLOSE/history events remain idempotent, stale OPEN/CLOSE events are rejected according to the existing ordering checks, and MT5 transactions update the live position and journal synchronization atomically.
+The existing safeguards remain intact: account ownership is checked before access, API keys are encrypted and hashed, raw keys are not returned after setup, account/ticket conflict keys make repeated OPEN/CLOSE/history events idempotent, stale events cannot replace newer valid state, and MT5 state writes remain atomic.
 
 ## Rollback procedure
 
-If production smoke tests fail, pause the MT5 EA polling and prevent new writes while preserving the Supabase database for investigation. In Netlify, restore the previous successful deploy or point the site back to the last known-good application commit. If the prior application is still running on the old backend, restore its original MySQL/TiDB `DATABASE_URL` and server environment variables rather than pointing the pre-migration code at PostgreSQL.
+If production smoke tests fail, pause MT5 EA polling and prevent new writes while preserving the Supabase database for investigation. In Netlify, restore the previous successful deployment or deploy the last known-good commit. Do not point a pre-Supabase application build at PostgreSQL unless that build explicitly supports the PostgreSQL schema and Supabase Auth contract.
 
-Do not delete or truncate Supabase data as part of an initial rollback. Preserve the export file, Supabase snapshot, and post-cutover audit window. Any writes accepted after cutover must be reconciled before a second cutover; the import utility’s `ON CONFLICT DO NOTHING` behavior is intentionally safe for reruns but does not overwrite divergent destination rows. After the root cause is fixed, repeat schema verification and the MT5 OPEN/CLOSE/idempotency smoke tests before attempting cutover again.
+Do not delete or truncate Supabase data during an initial rollback. Preserve the export file, Supabase snapshot, and post-cutover audit window. Any writes accepted after cutover must be reconciled before another cutover. The import utility’s `ON CONFLICT DO NOTHING` behavior is safe for reruns but does not overwrite divergent destination rows.
+
+After fixing the root cause, repeat schema verification, Supabase Auth login/refresh tests, private-storage signed-URL tests, and MT5 OPEN/CLOSE/idempotency smoke tests before deploying again.
 
 ## Validation completed in this repository
-
-The final validation completed locally with the following results:
 
 | Check | Result |
 |---|---:|
@@ -102,5 +116,3 @@ The final validation completed locally with the following results:
 | MySQL export utility bundle | Passed |
 | PostgreSQL import utility bundle | Passed |
 | Supabase verification utility bundle | Passed |
-
-The successful local checks validate code and packaging. They do not replace operator verification against the actual Supabase project, legacy database export, Netlify environment, Manus OAuth callback configuration, or production MT5 account.

@@ -13,9 +13,9 @@ export function SessionRecovery({ onRetry, onReconnect, reconnectStatus = "ready
       <p>Your private records have not been changed. Retry the secure sync, or reconnect your session if this screen remains open.</p>
       <div className="query-error-actions">
         <Button onClick={onRetry}><RefreshCcw size={15} /> Retry secure sync</Button>
-        <Button variant="outline" disabled={reconnectStatus === "checking"} onClick={onReconnect}>{reconnectStatus === "checking" ? "Checking sign-in…" : reconnectStatus === "unavailable" ? "Recheck sign-in service" : "Reconnect session"}</Button>
+        <Button variant="outline" disabled={reconnectStatus === "checking"} onClick={onReconnect}>{reconnectStatus === "checking" ? "Checking sign-in…" : reconnectStatus === "unavailable" ? "Recheck Supabase Auth" : "Reconnect Supabase session"}</Button>
       </div>
-      {reconnectStatus === "unavailable" && <p className="session-reconnect-notice" role="alert">Secure sign-in is temporarily unavailable. Recheck the service before reconnecting; your journal remains unchanged.</p>}
+      {reconnectStatus === "unavailable" && <p className="session-reconnect-notice" role="alert">Secure sign-in is temporarily unavailable. Recheck Supabase Auth before reconnecting; your journal remains unchanged.</p>}
     </div>
     <aside className="recovery-workbench" aria-label="Journal workstation context">
       <span>WORKSTATION STATUS</span>

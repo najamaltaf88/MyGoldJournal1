@@ -3,14 +3,13 @@ import express from "express";
 import { createServer } from "http";
 import net from "net";
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
-import { registerOAuthRoutes } from "./oauth";
-import { registerStorageProxy } from "./storageProxy";
 import { appRouter } from "../routers";
 import { registerMt5Ingest } from "../mt5Ingest";
 import { getActiveMt5Connection, recordMt5HistoryFailure } from "../mt5Db";
 import { createContext } from "./context";
 import { assertProductionConfiguration, ENV } from "./env";
 import { serveStatic, setupVite } from "./vite";
+import { storageGetSignedUrl } from "../storage";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -47,9 +46,14 @@ export async function createApp(options: { serveFrontend?: boolean } = {}) {
   // Keep JSON requests bounded; MT5 history batches are separately limited to 50 positions.
   app.use(express.json({ limit: "2mb", strict: true }));
   app.use(express.urlencoded({ limit: "256kb", extended: true, parameterLimit: 100 }));
-  registerStorageProxy(app);
-  registerOAuthRoutes(app);
   registerMt5Ingest(app);
+  app.get("/api/mt5/ea", async (_req, res) => {
+    try {
+      res.redirect(302, await storageGetSignedUrl(ENV.supabaseEaAssetKey));
+    } catch {
+      res.status(404).json({ ok: false, message: "MT5 EA asset is not available." });
+    }
+  });
   app.use(async (error: unknown, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (req.path === "/api/mt5" && error instanceof SyntaxError && "body" in error) {
       const detail = error.message || "Malformed JSON request body.";
